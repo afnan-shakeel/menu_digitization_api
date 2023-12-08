@@ -11,6 +11,16 @@ import os
 def index(request):
     return HttpResponse("Hello, world. You're at the polls index.")
 
+def delete_files_in_folder(folder_path):
+    try:
+        for filename in os.listdir(folder_path):
+            file_path = os.path.join(folder_path, filename)
+            if os.path.isfile(file_path):
+                os.remove(file_path)
+                print(f"Deleted file: {file_path}")
+    except Exception as e:
+        print(f"An error occurred: {e}")
+
 
 def group_columns_by_categories(column_groups, threshold):
     y_group = []
@@ -40,20 +50,6 @@ def group_columns_by_categories(column_groups, threshold):
 
     return y_group
 
-def calculate_threshold(column):
-        # Extract Y-coordinates from the column items
-        y_coordinates = [item['polygons'][0][1] for item in column]
-
-        # Calculate the interquartile range (IQR) of the Y-coordinates
-        q1 = np.percentile(y_coordinates, 25)
-        q3 = np.percentile(y_coordinates, 75)
-        iqr = q3 - q1
-
-        # Set the threshold as a fraction of the IQR
-        threshold = iqr * 0.75  # Adjust the fraction as needed
-
-        return threshold
-
 # extract text and polygons from the image using Textract
 def extract_text_and_polygons(client, file_name):
         with open(os.path.join(settings.MEDIA_ROOT, file_name), 'rb') as image_file:
@@ -68,41 +64,95 @@ def extract_text_and_polygons(client, file_name):
             if block['BlockType'] == 'LINE':
                 text = block['Text']
                 polygons = block['Geometry']['Polygon']
+                id = block['Id']
                 text_data.append({
                     'text': text,
-                    'polygons': polygons
+                    'polygons': polygons,
+                    'id': id
                 })
+
 
         return text_data
 
-# extract dish names, prices, and associated polygons
 def extract_dish_prices(text_data, price_regex):
-        dish_prices = []
+    dish_prices = []
+    i = 0
+    while True:
+        # print("["+str(i)+"]")
+        last_element_condition = (text_data[i]['id'] == text_data[-1]['id'])
 
-        for i in range(1, len(text_data)):
-            current_text = text_data[i]['text']
-            previous_text = text_data[i-1]['text']
-
-            if re.match(price_regex, current_text):
-                dish_name = previous_text.strip()
-                price = current_text.strip()
-                current_polygon = text_data[i]['polygons']
-                previous_polygon = text_data[i-1]['polygons']
-                next_polygon = text_data[i+1]['polygons']
-
-                dish_price_obj = {
-                    'dish_name': dish_name,
-                    'price': price,
-                    'polygons': {
-                        'current_block': current_polygon,
-                        'prev_block': previous_polygon,
-                        'next_block': next_polygon
-                    }
+        if last_element_condition:
+            break
+        # if re.match(price_regex, current_text) and re.match(price_regex, current_text + 1) && re.match(price_regex, current_text) + 2 => i+=3 and to use pol of text[i+3]
+        if (text_data[i]['id'] not in [text_data[-1]['id'], text_data[-2]['id'], text_data[-3]['id']]) and re.match(price_regex, text_data[i]['text']) and re.match(price_regex, text_data[i+1]['text']) and re.match(price_regex, text_data[i+2]['text']):
+            dish_name = text_data[i-1]['text'].strip()
+            price = [text_data[i]['text'].strip(), text_data[i+1]
+                     ['text'], text_data[i+2]['text']]
+            current_polygon = text_data[i]['polygons']
+            previous_polygon = text_data[i-1]['polygons']
+            next_polygon = text_data[i+1]['polygons']
+            dish_price_obj = {
+                'dish_name': dish_name,
+                'price': price,
+                'polygons': {
+                    'current_block': current_polygon,
+                    'prev_block': previous_polygon,
+                    'next_block': next_polygon
                 }
+            }
+            dish_prices.append(dish_price_obj)
 
-                dish_prices.append(dish_price_obj)
+            # print('matched for 3 price: ', dish_name, price)
+            i += 3
+            continue
+        # if re.match(price_regex, current_text) and re.match(price_regex, current_text + 1) => i+=3 and to use pol of text[i+3]
+        elif (text_data[i]['id'] not in [text_data[-1]['id']]) and re.match(price_regex, text_data[i]['text']) and re.match(price_regex, text_data[i+1]['text']):
+            dish_name = text_data[i-1]['text'].strip()
+            price = [text_data[i]['text'].strip(), text_data[i+1]['text']]
+            current_polygon = text_data[i]['polygons']
+            previous_polygon = text_data[i-1]['polygons']
+            next_polygon = text_data[i+1]['polygons']
+            dish_price_obj = {
+                'dish_name': dish_name,
+                'price': price,
+                'polygons': {
+                    'current_block': current_polygon,
+                    'prev_block': previous_polygon,
+                    'next_block': next_polygon
+                }
+            }
+            dish_prices.append(dish_price_obj)
 
-        return dish_prices
+            # print('matched for 2 price: ', dish_name, price)
+            i += 2
+            continue
+
+        elif re.match(price_regex, text_data[i]['text']):
+            dish_name = text_data[i-1]['text'].strip()
+            price = text_data[i]['text'].strip()
+            current_polygon = text_data[i]['polygons']
+            previous_polygon = text_data[i-1]['polygons']
+            # neglecting this i (was i+1)
+            next_polygon = text_data[i]['polygons']
+
+            dish_price_obj = {
+                'dish_name': dish_name,
+                'price': [price],
+                'polygons': {
+                    'current_block': current_polygon,
+                    'prev_block': previous_polygon,
+                    'next_block': next_polygon
+                }
+            }
+
+            dish_prices.append(dish_price_obj)
+            # print('matched for 1 price: ', dish_name, price)
+            i += 1
+
+            continue
+        i+=1
+
+    return dish_prices
 
 def group_items_within_column(text_data, threshold):
 
@@ -128,10 +178,9 @@ def upload_image(request):
     if request.method == 'POST':
         if request.FILES['file']:
             file = request.FILES['file']
-            print(file)
-            # Process the uploaded file as needed
-            # For example, save it to a specific location
-            with open(os.path.join(settings.MEDIA_ROOT, file.name), 'wb+') as destination:
+            # print(file)
+            delete_files_in_folder(settings.MEDIA_ROOT)
+            with open(os.path.join(settings.MEDIA_ROOT, 'extraction_image.png'), 'wb+') as destination:
                 for chunk in file.chunks():
                     destination.write(chunk)
             
@@ -147,7 +196,7 @@ def extract_process(request):
     if request.method == "GET":
         client = boto3.client('textract')
 
-        file_name = 'testmenu.png'
+        file_name = 'extraction_image.png'
         special_strings = ['/-',':','$','₹','/=']
         global blocks
         extracted_data = extract_text_and_polygons(client=client, file_name=file_name)
